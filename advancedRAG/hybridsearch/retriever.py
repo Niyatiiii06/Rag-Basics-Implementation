@@ -1,55 +1,56 @@
 from collections import defaultdict
+from typing import List
+
+from langchain_core.documents import Document
 
 
-def get_document_id(document):
+def get_document_id(document: Document) -> str:
+    """
+    Generate a stable unique ID for a document.
+    Prefer chunk_id if available; otherwise fall back
+    to source, page, and content.
+    """
 
-    # Prefer a unique chunk ID
-    if "chunk_id" in document.metadata:
-        return document.metadata["chunk_id"]
+    chunk_id = document.metadata.get("chunk_id")
 
-    # Otherwise use source + page + content
-    source = document.metadata.get(
-        "source",
-        ""
-    )
+    if chunk_id:
+        return str(chunk_id)
 
-    page = document.metadata.get(
-        "page",
-        ""
-    )
+    source = document.metadata.get("source", "")
+    page = document.metadata.get("page", "")
 
-    return (
-        f"{source}_{page}_"
-        f"{document.page_content}"
-    )
+    return f"{source}_{page}_{document.page_content}"
 
 
 def reciprocal_rank_fusion(
-    result_lists,
-    k=60,
-):
+    result_lists: List[List[Document]],
+    k: int = 60,
+) -> List[Document]:
+    """
+    Combine multiple ranked result lists using
+    Reciprocal Rank Fusion (RRF).
+
+    RRF Score:
+        score = 1 / (k + rank)
+    """
+
     scores = defaultdict(float)
     documents = {}
 
     for results in result_lists:
 
-        for rank, document in enumerate(
-            results,
-            start=1,
-        ):
+        for rank, document in enumerate(results, start=1):
 
-            document_id = get_document_id(
-                document
-            )
+            document_id = get_document_id(document)
 
-            # RRF formula
-            scores[document_id] += (
-                1 / (k + rank)
-            )
+            # Add this document's contribution
+            # from the current retrieval method.
+            scores[document_id] += 1 / (k + rank)
 
+            # Keep the actual Document object.
             documents[document_id] = document
 
-    # Sort using RRF score
+    # Rank documents by their combined RRF score.
     ranked_ids = sorted(
         scores,
         key=scores.get,
@@ -57,62 +58,69 @@ def reciprocal_rank_fusion(
     )
 
     return [
-        documents[doc_id]
-        for doc_id in ranked_ids
+        documents[document_id]
+        for document_id in ranked_ids
     ]
 
 
-def deduplicate_documents(documents):
+def deduplicate_documents(
+    documents: List[Document],
+) -> List[Document]:
+    """
+    Remove duplicate documents while preserving
+    their existing ranking order.
+    """
 
     unique_documents = []
     seen_ids = set()
 
     for document in documents:
 
-        document_id = get_document_id(
-            document
-        )
+        document_id = get_document_id(document)
 
         if document_id in seen_ids:
             continue
 
         seen_ids.add(document_id)
-
-        unique_documents.append(
-            document
-        )
+        unique_documents.append(document)
 
     return unique_documents
 
 
 def hybrid_retrieve(
-    query,
+    query: str,
     vector_retriever,
     bm25_retriever,
-    max_candidates=30,
-):
+    max_candidates: int = 30,
+) -> List[Document]:
+    """
+    Perform hybrid retrieval using:
 
-    # -----------------------------
-    # 1. Vector search
-    # -----------------------------
+    1. Dense vector search
+    2. BM25 keyword search
+    3. Reciprocal Rank Fusion
+    4. Deduplication
+    5. Candidate limiting
 
-    vector_docs = vector_retriever.invoke(
-        query
-    )
+    Returns:
+        Ranked candidate documents for reranking.
+    """
 
+    # -----------------------------------------
+    # 1. Dense / semantic retrieval
+    # -----------------------------------------
 
-    # -----------------------------
-    # 2. BM25 search
-    # -----------------------------
+    vector_docs = vector_retriever.invoke(query)
 
-    bm25_docs = bm25_retriever.invoke(
-        query
-    )
+    # -----------------------------------------
+    # 2. Sparse / keyword retrieval
+    # -----------------------------------------
 
+    bm25_docs = bm25_retriever.invoke(query)
 
-    # -----------------------------
-    # 3. RRF
-    # -----------------------------
+    # -----------------------------------------
+    # 3. Combine rankings using RRF
+    # -----------------------------------------
 
     candidates = reciprocal_rank_fusion(
         [
@@ -121,23 +129,15 @@ def hybrid_retrieve(
         ]
     )
 
+    # -----------------------------------------
+    # 4. Remove duplicate chunks
+    # -----------------------------------------
 
-    # -----------------------------
-    # 4. Remove duplicates
-    # -----------------------------
+    candidates = deduplicate_documents(candidates)
 
-    candidates = deduplicate_documents(
-        candidates
-    )
+    # -----------------------------------------
+    # 5. Keep only candidates needed
+    #    by the reranker
+    # -----------------------------------------
 
-
-    # -----------------------------
-    # 5. Candidate limit
-    # -----------------------------
-
-    candidates = candidates[
-        :max_candidates
-    ]
-
-
-    return candidates
+    return candidates[:max_candidates]
