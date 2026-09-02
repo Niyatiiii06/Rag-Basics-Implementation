@@ -171,6 +171,9 @@ def create_pipeline():
 
 
 def main():
+    """
+    Application entry point.
+    """
 
     print("Initializing Hybrid RAG pipeline...")
 
@@ -194,110 +197,24 @@ def main():
 
         try:
 
-            # =========================================
-            # DEBUG RETRIEVAL
-            # =========================================
-
-            print("\nRunning retrieval pipeline...")
-
-            debug = pipeline.debug_retrieval(
-                query
-            )
-
-            # =========================================
-            # VECTOR SEARCH
-            # =========================================
-
-            print(
-                "\n========== VECTOR SEARCH =========="
-            )
-
-            for i, doc in enumerate(
-                debug["vector"],
-                start=1,
-            ):
-                print(
-                    f"\n{i}. "
-                    f"{doc.page_content[:300]}..."
-                )
-
-            # =========================================
-            # BM25
-            # =========================================
-
-            print(
-                "\n========== BM25 SEARCH =========="
-            )
-
-            for i, doc in enumerate(
-                debug["bm25"],
-                start=1,
-            ):
-                print(
-                    f"\n{i}. "
-                    f"{doc.page_content[:300]}..."
-                )
-
-            # =========================================
-            # RRF
-            # =========================================
-
-            print(
-                "\n========== AFTER RRF =========="
-            )
-
-            for i, doc in enumerate(
-                debug["rrf"],
-                start=1,
-            ):
-                print(
-                    f"\n{i}. "
-                    f"{doc.page_content[:300]}..."
-                )
-
-            # =========================================
-            # RERANKING
-            # =========================================
-
-            print(
-                "\n========== AFTER RERANKING =========="
-            )
-
-            for i, (doc, score) in enumerate(
-                debug["reranked"],
-                start=1,
-            ):
-                print(
-                    f"\n{i}. Cross-Encoder Score: "
-                    f"{score:.4f}"
-                )
-
-                print(
-                    doc.page_content[:300]
-                    + "..."
-                )
-
-            # =========================================
-            # FINAL ANSWER
-            # =========================================
-
             result = pipeline.invoke(query)
 
-            print(
-                "\n========== FINAL ANSWER =========="
-            )
+            # -----------------------------------------
+            # Answer
+            # -----------------------------------------
 
+            print("\nAnswer:")
             print(result["answer"])
 
-            # =========================================
-            # SOURCES
-            # =========================================
+            # -----------------------------------------
+            # Sources
+            # -----------------------------------------
 
             sources = result["sources"]
 
-            print("\n========== SOURCES ==========")
-
             if sources:
+
+                print("\nSources:")
 
                 seen_sources = set()
 
@@ -316,8 +233,7 @@ def main():
                     print(f"- {source}")
 
             else:
-
-                print("No sources found.")
+                print("\nSources: None")
 
         except Exception as error:
 
