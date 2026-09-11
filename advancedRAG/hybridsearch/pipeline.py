@@ -1,11 +1,7 @@
 from typing import Any, Dict, List
-
 from langchain_core.documents import Document
 
-from retriever import (
-    hybrid_retrieve,
-    reciprocal_rank_fusion,
-)
+from retriever import hybrid_retrieve, reciprocal_rank_fusion
 from reranker import DocumentReranker
 
 
@@ -25,11 +21,11 @@ class HybridRAGPipeline:
         self.llm = llm
         self.candidate_k = candidate_k
 
-    def retrieve(
-        self,
-        query: str,
-    ) -> List[Document]:
+    # -----------------------------------------
+    # Retrieval: Hybrid Search + RRF + Reranking
+    # -----------------------------------------
 
+    def retrieve(self, query: str) -> List[Document]:
         candidates = hybrid_retrieve(
             query=query,
             vector_retriever=self.vector_retriever,
@@ -45,54 +41,21 @@ class HybridRAGPipeline:
             documents=candidates,
         )
 
-    def debug_retrieval(
-        self,
-        query: str,
-    ) -> Dict[str, Any]:
-        """
-        Show intermediate retrieval stages.
-        """
+    # -----------------------------------------
+    # Debug: Show retrieval stages
+    # -----------------------------------------
 
-        # -----------------------------------------
-        # Vector Search
-        # -----------------------------------------
-
-        vector_docs = self.vector_retriever.invoke(
-            query
-        )
-
-        # -----------------------------------------
-        # BM25 Search
-        # -----------------------------------------
-
-        bm25_docs = self.bm25_retriever.invoke(
-            query
-        )
-
-        # -----------------------------------------
-        # RRF
-        # -----------------------------------------
+    def debug_retrieval(self, query: str) -> Dict[str, Any]:
+        vector_docs = self.vector_retriever.invoke(query)
+        bm25_docs = self.bm25_retriever.invoke(query)
 
         rrf_docs = reciprocal_rank_fusion(
-            [
-                vector_docs,
-                bm25_docs,
-            ]
-        )
+            [vector_docs, bm25_docs]
+        )[:self.candidate_k]
 
-        rrf_docs = rrf_docs[
-            :self.candidate_k
-        ]
-
-        # -----------------------------------------
-        # Reranking
-        # -----------------------------------------
-
-        reranked_docs = (
-            self.reranker.rerank_with_scores(
-                query,
-                rrf_docs,
-            )
+        reranked_docs = self.reranker.rerank_with_scores(
+            query,
+            rrf_docs,
         )
 
         return {
@@ -102,6 +65,10 @@ class HybridRAGPipeline:
             "reranked": reranked_docs,
         }
 
+    # -----------------------------------------
+    # Grounded Generation + Citations
+    # -----------------------------------------
+
     def generate(
         self,
         query: str,
@@ -110,24 +77,47 @@ class HybridRAGPipeline:
 
         if not documents:
             return (
-                "I could not find enough relevant "
-                "information in the provided documents "
-                "to answer this question."
+                "I don't have enough information in the "
+                "provided documents to answer this question."
             )
 
-        context = "\n\n".join(
-            document.page_content
-            for document in documents
-        )
+        context_parts = []
+
+        for i, document in enumerate(documents, start=1):
+            source = document.metadata.get(
+                "source",
+                "Unknown source",
+            )
+            page = document.metadata.get(
+                "page",
+                "Unknown page",
+            )
+            chunk_id = document.metadata.get(
+                "chunk_id",
+                f"chunk_{i}",
+            )
+
+            context_parts.append(
+                f"[{chunk_id}] "
+                f"Source: {source} | Page: {page}\n"
+                f"{document.page_content}"
+            )
+
+        context = "\n\n".join(context_parts)
 
         prompt = f"""
-You are a helpful RAG assistant.
+You are a grounded RAG assistant.
 
-Answer the user's question using only the
-provided context.
+Answer the user's question using ONLY the provided context.
 
-If the answer is not available in the context,
-say that you do not have enough information.
+Rules:
+- Do not use outside knowledge.
+- Do not invent facts.
+- Every factual claim must be supported by the context.
+- Add a citation after each factual claim.
+- Use this format: [Source: chunk_id, Page: page]
+- If the context does not contain enough information, say:
+  "I don't have enough information in the provided documents."
 
 Context:
 {context}
@@ -140,12 +130,13 @@ Answer:
 
         response = self.llm.invoke(prompt)
 
-        return response.content
+        return response.content.strip()
 
-    def invoke(
-        self,
-        query: str,
-    ) -> Dict[str, Any]:
+    # -----------------------------------------
+    # Complete RAG Pipeline
+    # -----------------------------------------
+
+    def invoke(self, query: str) -> Dict[str, Any]:
 
         documents = self.retrieve(query)
 
