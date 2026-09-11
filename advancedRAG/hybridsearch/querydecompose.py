@@ -1,76 +1,69 @@
-from typing import List
-
 from langchain_mistralai import ChatMistralAI
+from typing import List
+from langchain_core.prompts import ChatPromptTemplate
 
 
 class QueryDecomposer:
-    """
-    Breaks a complex user query into smaller
-    independent search queries.
-    """
 
-    def __init__(
-        self,
-        llm: ChatMistralAI,
-        max_sub_queries: int = 4,
-    ):
+    def __init__(self, llm, max_sub_queries: int = 4):
         self.llm = llm
         self.max_sub_queries = max_sub_queries
 
-    def decompose(
-        self,
-        query: str,
-    ) -> List[str]:
-
-        prompt = f"""
+        self.prompt = ChatPromptTemplate.from_template(
+            """
 You are a query decomposition system for a RAG pipeline.
 
-Your task is to determine whether the user's query
-needs to be broken into smaller search queries.
-
-If the query is simple and can be answered with one
-search, return the original query unchanged.
-
-If the query is complex, break it into smaller,
-independent questions that can each be searched
-against a document collection.
+Break the user's complex question into smaller,
+independent sub-questions that can be retrieved separately.
 
 Rules:
-- Return at most {self.max_sub_queries} queries.
-- Each query must be self-contained.
+- If the query is already simple, return it unchanged.
+- Create at most {max_sub_queries} sub-queries.
+- Each sub-query should be self-contained.
 - Do not answer the questions.
-- Do not add information that is not present in the
-  original query.
-- Return one query per line.
-- Do not number the queries.
-- Do not use bullet points.
+- Return only one sub-query per line.
 
 User query:
 {query}
 """
+        )
 
-        response = self.llm.invoke(prompt)
+    def decompose(self, query: str) -> List[str]:
+        # -----------------------------------------
+        # Generate sub-queries
+        # -----------------------------------------
 
-        sub_queries = [
-            line.strip()
+        response = self.llm.invoke(
+            self.prompt.format(
+                query=query,
+                max_sub_queries=self.max_sub_queries,
+            )
+        )
+
+        # -----------------------------------------
+        # Clean LLM output
+        # -----------------------------------------
+
+        queries = [
+            line.strip("-• ").strip()
             for line in response.content.splitlines()
             if line.strip()
         ]
 
-        # Remove accidental numbering/bullets
-        cleaned_queries = []
+        # -----------------------------------------
+        # Remove duplicates
+        # -----------------------------------------
 
-        for sub_query in sub_queries:
+        unique_queries = list(dict.fromkeys(queries))
 
-            sub_query = sub_query.lstrip(
-                "0123456789.-) "
-            )
+        # -----------------------------------------
+        # Fallback
+        # -----------------------------------------
 
-            if sub_query:
-                cleaned_queries.append(
-                    sub_query
-                )
+        if not unique_queries:
+            return [query]
 
+        return unique_queries[:self.max_sub_queries]
         # Safety limit
         cleaned_queries = cleaned_queries[
             :self.max_sub_queries
