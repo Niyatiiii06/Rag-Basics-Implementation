@@ -1,8 +1,15 @@
 from typing import Any, Dict, List
+
 from langchain_core.documents import Document
 
-from retriever import hybrid_retrieve, reciprocal_rank_fusion
+from retriever import (
+    hybrid_retrieve,
+    reciprocal_rank_fusion,
+    deduplicate_documents,
+)
+
 from reranker import DocumentReranker
+from query_decomposer import QueryDecomposer
 
 
 class HybridRAGPipeline:
@@ -13,49 +20,117 @@ class HybridRAGPipeline:
         bm25_retriever,
         reranker: DocumentReranker,
         llm,
+        query_decomposer: QueryDecomposer,
         candidate_k: int = 30,
     ):
         self.vector_retriever = vector_retriever
         self.bm25_retriever = bm25_retriever
         self.reranker = reranker
         self.llm = llm
+        self.query_decomposer = query_decomposer
         self.candidate_k = candidate_k
 
-    # -----------------------------------------
-    # Retrieval: Hybrid Search + RRF + Reranking
-    # -----------------------------------------
+    def retrieve(
+        self,
+        query: str,
+    ) -> List[Document]:
 
-    def retrieve(self, query: str) -> List[Document]:
-        candidates = hybrid_retrieve(
-            query=query,
-            vector_retriever=self.vector_retriever,
-            bm25_retriever=self.bm25_retriever,
-            max_candidates=self.candidate_k,
+        # -----------------------------------------
+        # 1. Query Decomposition
+        # -----------------------------------------
+
+        sub_queries = self.query_decomposer.decompose(
+            query
+        )
+
+        # -----------------------------------------
+        # 2. Hybrid Search for each sub-query
+        # -----------------------------------------
+
+        all_candidates = []
+
+        for sub_query in sub_queries:
+
+            candidates = hybrid_retrieve(
+                query=sub_query,
+                vector_retriever=self.vector_retriever,
+                bm25_retriever=self.bm25_retriever,
+                max_candidates=self.candidate_k,
+            )
+
+            all_candidates.extend(candidates)
+
+        # -----------------------------------------
+        # 3. Merge + Deduplicate
+        # -----------------------------------------
+
+        candidates = deduplicate_documents(
+            all_candidates
         )
 
         if not candidates:
             return []
+
+        # -----------------------------------------
+        # 4. Cross-Encoder Reranking
+        # -----------------------------------------
 
         return self.reranker.rerank(
             query=query,
             documents=candidates,
         )
 
-    # -----------------------------------------
-    # Debug: Show retrieval stages
-    # -----------------------------------------
+    def debug_retrieval(
+        self,
+        query: str,
+    ) -> Dict[str, Any]:
 
-    def debug_retrieval(self, query: str) -> Dict[str, Any]:
-        vector_docs = self.vector_retriever.invoke(query)
-        bm25_docs = self.bm25_retriever.invoke(query)
+        """
+        Show intermediate retrieval stages.
+        Useful for debugging and understanding
+        how each retrieval method behaves.
+        """
+
+        # -----------------------------------------
+        # 1. Vector Search
+        # -----------------------------------------
+
+        vector_docs = self.vector_retriever.invoke(
+            query
+        )
+
+        # -----------------------------------------
+        # 2. BM25 Search
+        # -----------------------------------------
+
+        bm25_docs = self.bm25_retriever.invoke(
+            query
+        )
+
+        # -----------------------------------------
+        # 3. Reciprocal Rank Fusion
+        # -----------------------------------------
 
         rrf_docs = reciprocal_rank_fusion(
-            [vector_docs, bm25_docs]
-        )[:self.candidate_k]
+            [
+                vector_docs,
+                bm25_docs,
+            ]
+        )
 
-        reranked_docs = self.reranker.rerank_with_scores(
-            query,
-            rrf_docs,
+        rrf_docs = rrf_docs[
+            :self.candidate_k
+        ]
+
+        # -----------------------------------------
+        # 4. Cross-Encoder Reranking
+        # -----------------------------------------
+
+        reranked_docs = (
+            self.reranker.rerank_with_scores(
+                query,
+                rrf_docs,
+            )
         )
 
         return {
@@ -65,21 +140,26 @@ class HybridRAGPipeline:
             "reranked": reranked_docs,
         }
 
-    # -----------------------------------------
-    # Grounded Generation + Citations
-    # -----------------------------------------
-
     def generate(
         self,
         query: str,
         documents: List[Document],
     ) -> str:
 
+        # -----------------------------------------
+        # 5. Check Retrieved Context
+        # -----------------------------------------
+
         if not documents:
             return (
-                "I don't have enough information in the "
-                "provided documents to answer this question."
+                "I could not find enough relevant "
+                "information in the provided documents "
+                "to answer this question."
             )
+
+        # -----------------------------------------
+        # 6. Context + Grounded Generation + Citations
+        # -----------------------------------------
 
         context_parts = []
 
@@ -132,11 +212,14 @@ Answer:
 
         return response.content.strip()
 
-    # -----------------------------------------
-    # Complete RAG Pipeline
-    # -----------------------------------------
+    def invoke(
+        self,
+        query: str,
+    ) -> Dict[str, Any]:
 
-    def invoke(self, query: str) -> Dict[str, Any]:
+        # -----------------------------------------
+        # Complete RAG Pipeline
+        # -----------------------------------------
 
         documents = self.retrieve(query)
 
